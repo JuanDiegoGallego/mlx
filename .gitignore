@@ -1,0 +1,23 @@
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Raw sprite data (large binary files)
+data/raw/*.png
+
+# IDE
+.idea/
+.vscode/
+*.swp
