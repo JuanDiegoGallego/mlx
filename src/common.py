@@ -19,8 +19,6 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import ConfusionMatrixDisplay, classification_report
 from sklearn.utils.class_weight import compute_class_weight
 
-# ─────────────────────────── Constants ────────────────────────────────────────
-
 RANDOM_STATE = 42
 TEST_SIZE = 0.2
 
@@ -48,7 +46,7 @@ FEATURE_COLS_ALL = FEATURE_COLS_TIER1 + FEATURE_COLS_TIER2 + FEATURE_COLS_TIER3
 
 META_COLS = ["id", "name", "type1", "type2", "type1_encoded"]
 
-# Canonical color for each Pokémon type (Bulbapedia palette)
+# Canonical color for each Pokémon type.
 TYPE_COLORS = {
     "bug":      "#A8B820",
     "dark":     "#705848",
@@ -73,17 +71,14 @@ TYPE_COLORS = {
 # Chosen after running 1_decision_tree.ipynb and inspecting misclassification candidates.
 # correct_clear:      Gyarados  (#130, water/flying)  — obviously blue, correctly water
 # correct_surprise:   Iron Crown (#1023, steel/psychic) — metallic legend, correctly steel
-# misclass_secondary: Gengar    (#94,  ghost/poison)  — purple body → predicted poison
-# misclass_wrong:     Gholdengo (#1000, steel/ghost)  — golden color → predicted electric
+# misclass_secondary: Gengar    (#94,  ghost/poison)  — purple body -> predicted poison
+# misclass_wrong:     Gholdengo (#1000, steel/ghost)  — golden color -> predicted electric
 EXPLAIN_IDS: dict[str, Optional[int]] = {
     "correct_clear":      130,
     "correct_surprise":   1023,
     "misclass_secondary": 94,
     "misclass_wrong":     1000,
 }
-
-
-# ─────────────────────────── Project root ─────────────────────────────────────
 
 def _find_project_root() -> Path:
     """Walk up from this file until a directory containing 'data/' is found."""
@@ -96,9 +91,6 @@ def _find_project_root() -> Path:
 
 
 PROJECT_ROOT = _find_project_root()
-
-
-# ─────────────────────────── Data loading ─────────────────────────────────────
 
 def load_data() -> pd.DataFrame:
     """Load features.csv and apply Flying-type reclassification.
@@ -145,8 +137,6 @@ def get_label_mapping() -> tuple[dict[str, int], dict[int, str]]:
     return type_to_int, int_to_type
 
 
-# ─────────────────────────── Train / test split ────────────────────────────────
-
 def get_train_test_split(
     df: pd.DataFrame,
     feature_cols: Optional[list[str]] = None,
@@ -177,8 +167,6 @@ def get_train_test_split(
     return X_train, X_test, y_train, y_test, {"train_idx": train_idx, "test_idx": test_idx}
 
 
-# ─────────────────────────── Scaling ──────────────────────────────────────────
-
 def get_scaler(X_train: pd.DataFrame) -> StandardScaler:
     """Fit and return a StandardScaler on X_train.
 
@@ -194,8 +182,6 @@ def get_scaler(X_train: pd.DataFrame) -> StandardScaler:
     scaler.fit(X_train)
     return scaler
 
-
-# ─────────────────────────── Class weights ────────────────────────────────────
 
 def get_class_weights(y_train: pd.Series) -> dict[int, float]:
     """Compute balanced class weights to handle imbalance.
@@ -226,8 +212,6 @@ def get_sample_weights(y_train: pd.Series) -> np.ndarray:
     return np.array([cw[int(label)] for label in y_train])
 
 
-# ─────────────────────────── Cross-validation ─────────────────────────────────
-
 def get_cv_splitter(n_splits: int = 5) -> StratifiedKFold:
     """Return a reproducible StratifiedKFold splitter.
 
@@ -240,8 +224,6 @@ def get_cv_splitter(n_splits: int = 5) -> StratifiedKFold:
     return StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
 
 
-# ─────────────────────────── Path helpers ─────────────────────────────────────
-
 def get_sprite_path(pokemon_id: int) -> Path:
     """Return the path to a Pokemon's front sprite PNG.
 
@@ -253,8 +235,6 @@ def get_sprite_path(pokemon_id: int) -> Path:
     """
     return PROJECT_ROOT / "data" / "raw" / f"{pokemon_id}.png"
 
-
-# ─────────────────────────── Visualization helpers ────────────────────────────
 
 def plot_confusion_matrix(
     y_true: np.ndarray,
@@ -289,6 +269,7 @@ def plot_confusion_matrix(
         cmap="Blues",
         ax=ax,
         colorbar=False,
+        xticks_rotation=45,
     )
     target_ax = disp.ax_
     n = len(labels)
