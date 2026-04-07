@@ -16,6 +16,8 @@ build/
 
 # Raw sprite data (large binary files)
 data/raw/*.png
+data/raw/*.json
+data/processed/*.csv
 
 # IDE
 .idea/
