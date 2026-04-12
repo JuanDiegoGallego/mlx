@@ -8,3 +8,8 @@ scipy
 shap
 lime
 seaborn
+jinja2
+imblearn
+dice-ml
+scipy
+ipykernel

@@ -16,14 +16,14 @@ pokemon-xai/
 ├── README.md
 ├── requirements.txt
 ├── data/
-│   ├── labels.json          # type → integer mapping
+│   ├── labels.json          # type -> integer mapping
 │   ├── raw/                 # sprites + metadata (created by picker.py)
 │   └── processed/           # feature CSV (created by processer.py)
 ├── src/
 │   ├── picker.py            # data collection from PokéAPI
 │   ├── processer.py         # color feature extraction
 │   └── visualizer.py        # tkinter GUI for inspection
-└── notebooks/               # XAI analysis notebooks (added later)
+└── notebooks/               # XAI analysis notebooks
 ```
 
 ## Setup
@@ -76,3 +76,10 @@ Each sprite undergoes a 5-step pipeline:
 | 4 | HSV distribution statistics | 10 (means, stds, proportions) |
 | 5 | Hue histogram (12 × 30° bins) | 12 |
 | **Total** | | **42 features** |
+
+## Notebooks
+
+- `notebooks/0_EDA.ipynb`: Exploratory data analysis of the extracted features.
+- `notebooks/1_decision_tree.ipynb`: Decision Tree model training and XAI analysis.
+- `notebooks/2_knn.ipynb`: KNN model training and XAI analysis.
+- `notebooks/3_neural_network.ipynb`: Neural Network model training and XAI analysis.
