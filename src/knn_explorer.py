@@ -1,415 +1,788 @@
 """
-knn_explorer.py — Tkinter GUI for interactive KNN explainability.
+knn_explorer.py  --  Tkinter GUI for interactive KNN explainability (Model D).
 
-Displays a Pokémon sprite, its k nearest neighbours with type-colored borders,
-a neighbor type distribution bar chart, and a per-feature distance breakdown.
+Replicates Model D from notebooks/2_knn_final.ipynb:
+  Pipeline: StandardScaler -> SelectKBest(f_classif, k=15)
+            -> KNeighborsClassifier(n_neighbors=5, weights='distance',
+                                     metric='manhattan')
+  Features: CORE_FEATURES (27 columns), no SMOTE.
 
-Trains a lightweight KNN on the pruned feature set (features with positive
-permutation importance from the notebook analysis) at startup.
+Run from project root:  python src/knn_explorer.py
 """
 
-import json
+from __future__ import annotations
+
+import bisect
+import random
 import sys
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import ttk
 from typing import Optional
 
-import matplotlib.colors as mcolors
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from PIL import Image, ImageTk
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.preprocessing import StandardScaler
+import matplotlib
+matplotlib.use("TkAgg")
+import matplotlib.colors as mcolors  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # noqa: E402
+from PIL import Image, ImageTk  # noqa: E402
+from sklearn.feature_selection import SelectKBest, f_classif  # noqa: E402
+from sklearn.neighbors import KNeighborsClassifier  # noqa: E402
+from sklearn.pipeline import Pipeline  # noqa: E402
+from sklearn.preprocessing import StandardScaler  # noqa: E402
 
 # ── Project paths ────────────────────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
-import common
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+from src import common  # noqa: E402
 
-# ── Constants ────────────────────────────────────────────────────────────────
-WINDOW_WIDTH = 1200
-WINDOW_HEIGHT = 700
-
-# Best hyperparams from the notebook grid search (KNN + SMOTE pipeline).
-# These are hardcoded so the explorer works without re-running the notebook.
-KNN_N_NEIGHBORS = 9
+# ── Model D hyperparameters (from notebook GridSearchCV) ─────────────────────
+KNN_N_NEIGHBORS = 5
 KNN_WEIGHTS = "distance"
 KNN_METRIC = "manhattan"
+SELECTKBEST_K = 15
 
-# Features with positive permutation importance (from notebook section 3.1).
-# If the notebook hasn't been run yet, fall back to all features.
-PRUNED_FEATURES: Optional[list[str]] = None  # set at runtime
+CORE_FEATURES: list[str] = [
+    "dom1_h", "dom1_s", "dom1_v", "dom1_prop",
+    "dom2_h", "dom2_s", "dom2_v", "dom2_prop",
+    "mean_h_sin", "mean_h_cos", "mean_s", "mean_v",
+    "prop_dark", "prop_saturated", "color_diversity",
+    "hue_bin_0", "hue_bin_30", "hue_bin_60", "hue_bin_90",
+    "hue_bin_120", "hue_bin_150", "hue_bin_180", "hue_bin_210",
+    "hue_bin_240", "hue_bin_270", "hue_bin_300", "hue_bin_330",
+]
+
+WINDOW_TITLE = (
+    f"KNN Explorer \u2014 Model D "
+    f"(k={KNN_N_NEIGHBORS}, {len(CORE_FEATURES)} features, {KNN_METRIC})"
+)
+
+# ── Theme colours ────────────────────────────────────────────────────────────
+BG = "#1e1e1e"
+BG_LIGHT = "#2a2a2a"
+FG = "#e0e0e0"
+FG_DIM = "#aaaaaa"
+GREEN = "#88cc88"
+RED = "#ff6b6b"
+YELLOW = "#ffcc00"
+ACCENT = "#3a7bd5"
 
 
-# ── Model setup ──────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Data & Model
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def _train_knn():
-    """Load data, train a KNN on the pruned feature set, return all artefacts."""
+def train_model_d() -> dict:
+    """Train the Model D pipeline and return all artefacts for the GUI.
+
+    Returns a dict with keys: df, int_to_type, type_to_int, pipeline,
+    X_train, X_test, y_train, y_test, y_pred_test, split_idx,
+    X_train_selected, X_test_selected, selected_names, train_meta,
+    test_meta, all_ids, test_ids, misclassified_ids.
+    """
     df = common.load_data()
     type_to_int, int_to_type = common.get_label_mapping()
-    X_train, X_test, y_train, y_test, split_idx = common.get_train_test_split(df)
 
-    feature_cols = common.FEATURE_COLS_ALL
-
-    scaler_full = StandardScaler()
-    scaler_full.fit(X_train)
-
-    # Use all features for the explanation KNN (no SMOTE, real neighbours)
-    scaler = StandardScaler()
-    X_train_sc = pd.DataFrame(
-        scaler.fit_transform(X_train), index=X_train.index, columns=feature_cols
-    )
-    X_test_sc = pd.DataFrame(
-        scaler.transform(X_test), index=X_test.index, columns=feature_cols
+    X_train, X_test, y_train, y_test, split_idx = common.get_train_test_split(
+        df, feature_cols=CORE_FEATURES,
     )
 
-    knn = KNeighborsClassifier(
-        n_neighbors=KNN_N_NEIGHBORS, weights=KNN_WEIGHTS, metric=KNN_METRIC
-    )
-    knn.fit(X_train_sc, y_train)
+    pipeline = Pipeline([
+        ("scaler", StandardScaler()),
+        ("selector", SelectKBest(f_classif, k=SELECTKBEST_K)),
+        ("knn", KNeighborsClassifier(
+            n_neighbors=KNN_N_NEIGHBORS,
+            weights=KNN_WEIGHTS,
+            metric=KNN_METRIC,
+        )),
+    ])
+    pipeline.fit(X_train, y_train)
 
-    y_pred = knn.predict(X_test_sc)
+    y_pred_test = pipeline.predict(X_test)
+
+    # Pre-compute transformed features for neighbour / counterfactual lookups
+    scaler = pipeline.named_steps["scaler"]
+    selector = pipeline.named_steps["selector"]
+    selected_mask = selector.get_support()
+    selected_names = np.array(CORE_FEATURES)[selected_mask].tolist()
+
+    X_train_selected = selector.transform(scaler.transform(X_train))
+    X_test_selected = selector.transform(scaler.transform(X_test))
+
+    train_meta = df.iloc[split_idx["train_idx"]].reset_index(drop=True)
+    test_meta = df.iloc[split_idx["test_idx"]].reset_index(drop=True)
+
+    all_ids = sorted(df["id"].tolist())
+    test_ids = sorted(test_meta["id"].tolist())
+
+    mis_mask = y_pred_test != y_test.values
+    misclassified_ids = sorted(test_meta.loc[mis_mask, "id"].tolist())
 
     return {
         "df": df,
         "int_to_type": int_to_type,
         "type_to_int": type_to_int,
-        "feature_cols": feature_cols,
-        "X_train_sc": X_train_sc,
-        "X_test_sc": X_test_sc,
+        "pipeline": pipeline,
+        "X_train": X_train,
+        "X_test": X_test,
         "y_train": y_train,
         "y_test": y_test,
-        "y_pred": y_pred,
+        "y_pred_test": y_pred_test,
         "split_idx": split_idx,
-        "knn": knn,
+        "X_train_selected": X_train_selected,
+        "X_test_selected": X_test_selected,
+        "selected_names": selected_names,
+        "train_meta": train_meta,
+        "test_meta": test_meta,
+        "all_ids": all_ids,
+        "test_ids": test_ids,
+        "misclassified_ids": misclassified_ids,
     }
 
 
-# ── Figure builders ──────────────────────────────────────────────────────────
+def query_pokemon(m: dict, pokemon_id: int) -> Optional[dict]:
+    """Look up a Pokemon by Pokedex ID and compute all explanation data.
 
-def build_neighbor_mosaic(df, neighbor_df_indices, query_name, pokemon_id, k):
-    """Sprite mosaic of k nearest neighbours with type-colored borders."""
-    n_cols = min(k, 5)
-    n_rows = (k + n_cols - 1) // n_cols
-    fig, axes = plt.subplots(
-        n_rows, n_cols,
-        figsize=(n_cols * 1.6, n_rows * 2.0),
-        squeeze=False,
+    Returns a dict with keys: pokemon_id, name, true_type, type2,
+    pred_type, correct, in_test, neighbors, vote_counts,
+    feat_dist_top10, counterfactual, raw_features.
+    Returns None when *pokemon_id* is not found in the dataset.
+    """
+    df = m["df"]
+    row_matches = df[df["id"] == pokemon_id]
+    if row_matches.empty:
+        return None
+
+    row = row_matches.iloc[0]
+    pipeline = m["pipeline"]
+    scaler = pipeline.named_steps["scaler"]
+    selector = pipeline.named_steps["selector"]
+    knn = pipeline.named_steps["knn"]
+
+    # Scale + select the query point (keep as DataFrame to match scaler's fit)
+    x_raw = pd.DataFrame([row[CORE_FEATURES].values.astype(float)], columns=CORE_FEATURES)
+    x_selected = selector.transform(scaler.transform(x_raw))[0]
+
+    pred_int = int(knn.predict(x_selected.reshape(1, -1))[0])
+    pred_label = m["int_to_type"][pred_int]
+    true_label = row["type1"]
+
+    in_test = pokemon_id in m["test_ids"]
+
+    # ── Neighbours ───────────────────────────────────────────────────────────
+    distances, neigh_idx = knn.kneighbors(
+        x_selected.reshape(1, -1), n_neighbors=KNN_N_NEIGHBORS,
     )
-    fig.patch.set_facecolor("#1e1e1e")
-    axes_flat = axes.reshape(-1)
+    distances = distances[0]
+    neigh_idx = neigh_idx[0]
 
-    for ax_i, ni in enumerate(neighbor_df_indices):
-        nb = df.loc[ni]
-        sprite_path = common.get_sprite_path(int(nb["id"]))
-        ax = axes_flat[ax_i]
-        ax.set_facecolor("#1e1e1e")
-        if sprite_path.exists():
-            img = Image.open(sprite_path).convert("RGBA")
-            bg = Image.new("RGBA", img.size, (30, 30, 30, 255))
-            bg.paste(img, mask=img.split()[3])
-            ax.imshow(bg)
+    neighbors: list[dict] = []
+    for ni, dist in zip(neigh_idx, distances):
+        nb = m["train_meta"].iloc[ni]
+        neighbors.append({
+            "name": nb["name"],
+            "id": int(nb["id"]),
+            "type1": nb["type1"],
+            "type2": nb["type2"] if pd.notna(nb["type2"]) else None,
+            "distance": float(dist),
+            "features_selected": m["X_train_selected"][ni],
+        })
+
+    # Vote distribution (raw counts)
+    vote_counts: dict[str, int] = {}
+    for nb in neighbors:
+        vote_counts[nb["type1"]] = vote_counts.get(nb["type1"], 0) + 1
+
+    # ── Feature distance to nearest neighbour (top 10, selected space) ───────
+    nearest_feat = m["X_train_selected"][neigh_idx[0]]
+    feat_dist = np.abs(x_selected - nearest_feat)
+    top10 = np.argsort(feat_dist)[::-1][:10]
+    sel_names = m["selected_names"]
+    feat_dist_top10 = [(sel_names[i], float(feat_dist[i])) for i in top10]
+
+    # ── Counterfactual: nearest enemy (different type than predicted) ────────
+    y_train_arr = m["y_train"].values
+    enemy_mask = y_train_arr != pred_int
+    enemy_pos = np.where(enemy_mask)[0]
+    # Use Manhattan (L1) to stay consistent with the KNN metric
+    enemy_dists = np.abs(
+        m["X_train_selected"][enemy_pos] - x_selected,
+    ).sum(axis=1)
+    best = int(np.argmin(enemy_dists))
+    cf_pos = enemy_pos[best]
+    cf_meta = m["train_meta"].iloc[cf_pos]
+    cf_feat = m["X_train_selected"][cf_pos]
+
+    cf_diff = np.abs(cf_feat - x_selected)
+    top3 = np.argsort(cf_diff)[::-1][:3]
+    cf_top3 = [(sel_names[i], float(cf_diff[i])) for i in top3]
+
+    return {
+        "pokemon_id": pokemon_id,
+        "name": row["name"],
+        "true_type": true_label,
+        "type2": row["type2"] if pd.notna(row["type2"]) else None,
+        "pred_type": pred_label,
+        "correct": pred_label == true_label,
+        "in_test": in_test,
+        "neighbors": neighbors,
+        "vote_counts": vote_counts,
+        "feat_dist_top10": feat_dist_top10,
+        "counterfactual": {
+            "name": cf_meta["name"],
+            "id": int(cf_meta["id"]),
+            "type1": cf_meta["type1"],
+            "distance": float(enemy_dists[best]),
+            "top3_diffs": cf_top3,
+        },
+        "raw_features": {f: float(row[f]) for f in CORE_FEATURES},
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Figure builders (dark theme, matplotlib -> Tk canvas)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _load_sprite(pokemon_id: int, size: tuple[int, int] | None = None) -> Image.Image | None:
+    """Load a sprite as RGBA composited onto dark background, optionally resized."""
+    path = common.get_sprite_path(pokemon_id)
+    if not path.exists():
+        return None
+    img = Image.open(path).convert("RGBA")
+    bg = Image.new("RGBA", img.size, (30, 30, 30, 255))
+    bg.paste(img, mask=img.split()[3])
+    if size is not None:
+        bg = bg.resize(size, Image.NEAREST)
+    return bg
+
+
+def build_neighbor_panel(neighbors: list[dict], pred_type: str) -> plt.Figure:
+    """Horizontal row of neighbour sprites with type-coloured borders.
+
+    Neighbours whose type matches *pred_type* get a thicker, brighter
+    border to indicate they voted for the winning class.
+    """
+    k = len(neighbors)
+    fig, axes = plt.subplots(1, k, figsize=(k * 1.9, 2.6), squeeze=False)
+    fig.patch.set_facecolor(BG)
+    axes_flat = axes[0]
+
+    for ax, nb in zip(axes_flat, neighbors):
+        ax.set_facecolor(BG)
+        sprite = _load_sprite(nb["id"])
+        if sprite is not None:
+            ax.imshow(sprite)
         else:
             ax.text(0.5, 0.5, "N/A", ha="center", va="center",
-                    transform=ax.transAxes, fontsize=8, color="white")
-        type_color = common.TYPE_COLORS.get(nb["type1"], "#888888")
+                    transform=ax.transAxes, fontsize=9, color=FG)
+
+        tc = common.TYPE_COLORS.get(nb["type1"], "#888888")
+        voted_pred = nb["type1"] == pred_type
+        lw = 3.5 if voted_pred else 1.2
         for spine in ax.spines.values():
-            spine.set_edgecolor(type_color)
-            spine.set_linewidth(2.5)
+            spine.set_edgecolor(tc)
+            spine.set_linewidth(lw)
+
         ax.set_title(
-            f"{nb['name'].capitalize()}\n{nb['type1']}",
-            fontsize=7, color=type_color,
+            f"{nb['name'].capitalize()}\n{nb['type1']}  d={nb['distance']:.2f}",
+            fontsize=7,
+            color=tc,
+            fontweight="bold" if voted_pred else "normal",
         )
         ax.set_xticks([])
         ax.set_yticks([])
 
-    for ax_i in range(len(neighbor_df_indices), len(axes_flat)):
-        axes_flat[ax_i].axis("off")
-        axes_flat[ax_i].set_facecolor("#1e1e1e")
+    fig.suptitle("K-Nearest Neighbors", fontsize=10, color=FG, y=0.98)
+    fig.tight_layout(rect=[0, 0, 1, 0.88])
+    return fig
 
-    fig.suptitle(
-        f"Neighbours of {query_name} (#{pokemon_id})",
-        fontsize=9, color="white",
+
+def build_confidence_bar(
+    vote_counts: dict[str, int],
+    pred_type: str,
+    k: int,
+) -> plt.Figure:
+    """Horizontal stacked bar showing the neighbour-vote distribution."""
+    fig, ax = plt.subplots(figsize=(4, 0.9))
+    fig.patch.set_facecolor(BG)
+    ax.set_facecolor(BG)
+
+    sorted_types = sorted(
+        vote_counts, key=lambda t: (t != pred_type, -vote_counts[t]),
     )
-    fig.tight_layout(pad=0.4, rect=[0, 0, 1, 0.93])
-    return fig
-
-
-def build_type_dist_chart(df, neighbor_df_indices):
-    """Bar chart of neighbour type distribution."""
-    neighbor_types = [df.loc[ni]["type1"] for ni in neighbor_df_indices]
-    type_counts = pd.Series(neighbor_types).value_counts()
-
-    fig, ax = plt.subplots(figsize=(4, 3))
-    fig.patch.set_facecolor("#1e1e1e")
-    ax.set_facecolor("#2a2a2a")
-    ax.bar(
-        type_counts.index, type_counts.values,
-        color=[common.TYPE_COLORS.get(t, "#888") for t in type_counts.index],
-        edgecolor="#1e1e1e", linewidth=0.5,
-    )
-    ax.set_title("Neighbor Types", fontsize=9, color="white", pad=4)
-    ax.set_ylabel("Count", fontsize=8, color="white")
-    ax.tick_params(axis="x", rotation=30, labelsize=7, colors="white")
-    ax.tick_params(axis="y", labelsize=7, colors="white")
-    ax.spines[:].set_color("#444444")
-    fig.tight_layout(pad=0.5)
-    return fig
-
-
-def build_distance_chart(X_train_sc, neighbor_df_indices, x_query):
-    """Horizontal bar chart of per-feature absolute distance to neighbours."""
-    neighbor_features = X_train_sc.loc[neighbor_df_indices]
-    abs_diffs = (neighbor_features - x_query.values).abs()
-    mean_diff = abs_diffs.mean(axis=0).nlargest(12).sort_values()
-
-    bar_colors = [
-        "#cc4444" if v == mean_diff.max()
-        else "#ee9966" if v >= mean_diff.quantile(0.75)
-        else "#8899cc"
-        for v in mean_diff.values
-    ]
-
-    fig, ax = plt.subplots(figsize=(4, 3.5))
-    fig.patch.set_facecolor("#1e1e1e")
-    ax.set_facecolor("#2a2a2a")
-    mean_diff.plot.barh(ax=ax, color=bar_colors)
-    ax.set_title("Feature Distance (top 12)", fontsize=9, color="white", pad=4)
-    ax.set_xlabel("Mean |diff| (z-score)", fontsize=7, color="white")
-    ax.tick_params(axis="both", labelsize=7, colors="white")
-    ax.spines[:].set_color("#444444")
-    fig.tight_layout(pad=0.5)
-    return fig
-
-
-def build_color_swatches(row: pd.Series) -> plt.Figure:
-    """Horizontal strip of 5 dominant colors, widths proportional to cluster share."""
-    fig, ax = plt.subplots(figsize=(2.0, 0.9))
-    fig.patch.set_facecolor("#1e1e1e")
-    ax.set_facecolor("#1e1e1e")
-
-    x = 0.0
-    for i in range(1, 6):
-        prop = float(row[f"dom{i}_prop"])
-        color = np.clip(
-            mcolors.hsv_to_rgb(
-                [float(row[f"dom{i}_h"]) / 360.0, float(row[f"dom{i}_s"]), float(row[f"dom{i}_v"])]
-            ),
-            0.0, 1.0,
-        )
-        ax.bar(x + prop / 2, 1, width=prop, color=color, edgecolor="#1e1e1e", linewidth=0.5)
-        x += prop
+    left = 0.0
+    for t in sorted_types:
+        cnt = vote_counts[t]
+        w = cnt / k
+        color = common.TYPE_COLORS.get(t, "#888888")
+        ax.barh(0, w, left=left, color=color, edgecolor=BG, height=0.6)
+        if w >= 0.10:
+            ax.text(
+                left + w / 2, 0, f"{cnt}/{k} {t}",
+                ha="center", va="center", fontsize=7,
+                color="white", fontweight="bold",
+            )
+        left += w
 
     ax.set_xlim(0, 1)
+    ax.set_ylim(-0.5, 0.5)
+    ax.axis("off")
+    ax.set_title("Vote Distribution", fontsize=8, color=FG, pad=2)
+    fig.tight_layout(pad=0.3)
+    return fig
+
+
+def build_feature_distance_chart(
+    feat_dist_top10: list[tuple[str, float]],
+) -> plt.Figure:
+    """Horizontal bar chart of top-10 features by distance to nearest neighbour."""
+    names = [n for n, _ in feat_dist_top10][::-1]
+    values = [v for _, v in feat_dist_top10][::-1]
+
+    fig, ax = plt.subplots(figsize=(4.2, 3.4))
+    fig.patch.set_facecolor(BG)
+    ax.set_facecolor(BG_LIGHT)
+
+    max_v = max(values) if values else 1.0
+    colors = [
+        "#cc4444" if v == max_v
+        else "#ee9966" if v >= max_v * 0.65
+        else "#8899cc"
+        for v in values
+    ]
+    ax.barh(names, values, color=colors, edgecolor=BG, height=0.65)
+    ax.set_title(
+        "Feature Distance to Nearest Neighbor",
+        fontsize=9, color=FG, pad=4,
+    )
+    ax.set_xlabel("|query \u2212 neighbor| (scaled)", fontsize=7, color=FG_DIM)
+    ax.tick_params(axis="both", labelsize=7, colors=FG_DIM)
+    for spine in ax.spines.values():
+        spine.set_color("#444444")
+    fig.tight_layout(pad=0.5)
+    return fig
+
+
+def build_counterfactual_panel(cf: dict, pred_type: str) -> plt.Figure:
+    """Nearest-enemy sprite + top-3 feature differences."""
+    fig, (ax_spr, ax_bar) = plt.subplots(
+        1, 2, figsize=(5.4, 2.4),
+        gridspec_kw={"width_ratios": [1, 2]},
+    )
+    fig.patch.set_facecolor(BG)
+
+    # ── Sprite ───────────────────────────────────────────────────────────────
+    ax_spr.set_facecolor(BG)
+    sprite = _load_sprite(cf["id"])
+    if sprite is not None:
+        ax_spr.imshow(sprite)
+    ax_spr.axis("off")
+    tc = common.TYPE_COLORS.get(cf["type1"], "#888888")
+    ax_spr.set_title(
+        f"Nearest Enemy\n{cf['name'].capitalize()} ({cf['type1']})\n"
+        f"dist = {cf['distance']:.3f}",
+        fontsize=7, color=tc,
+    )
+
+    # ── Top-3 feature diffs ──────────────────────────────────────────────────
+    ax_bar.set_facecolor(BG_LIGHT)
+    bar_names = [n for n, _ in cf["top3_diffs"]][::-1]
+    bar_vals = [d for _, d in cf["top3_diffs"]][::-1]
+    ax_bar.barh(bar_names, bar_vals, color="#F44336", alpha=0.85, height=0.5)
+    ax_bar.set_title("Top-3 Feature Differences", fontsize=8, color=FG, pad=2)
+    ax_bar.set_xlabel("|diff| (scaled)", fontsize=7, color=FG_DIM)
+    ax_bar.tick_params(axis="both", labelsize=7, colors=FG_DIM)
+    for spine in ax_bar.spines.values():
+        spine.set_color("#444444")
+
+    fig.suptitle(
+        f"Counterfactual \u2014 nearest non-{pred_type} training sample",
+        fontsize=8, color=FG_DIM, y=0.99,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.90])
+    return fig
+
+
+def build_color_swatches(features: dict[str, float]) -> plt.Figure:
+    """Horizontal strip showing dom1 and dom2 colour proportions."""
+    fig, ax = plt.subplots(figsize=(2.6, 0.7))
+    fig.patch.set_facecolor(BG)
+    ax.set_facecolor(BG)
+
+    x = 0.0
+    for i in (1, 2):
+        h = features.get(f"dom{i}_h", 0) / 360.0
+        s = features.get(f"dom{i}_s", 0)
+        v = features.get(f"dom{i}_v", 0)
+        prop = features.get(f"dom{i}_prop", 0)
+        color = np.clip(mcolors.hsv_to_rgb([h, s, v]), 0.0, 1.0)
+        ax.bar(x + prop / 2, 1, width=prop, color=color,
+               edgecolor=BG, linewidth=0.5)
+        x += prop
+
+    ax.set_xlim(0, max(x, 0.01))
     ax.set_ylim(0, 1)
     ax.axis("off")
-    ax.set_title("Dominant Colors", color="white", fontsize=7, pad=2)
+    ax.set_title("Dominant Colors", color=FG_DIM, fontsize=7, pad=2)
     fig.tight_layout(pad=0.2)
     return fig
 
 
-# ── Main application ─────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  GUI
+# ═══════════════════════════════════════════════════════════════════════════════
 
 class KNNExplorer:
-    """Interactive KNN explainability GUI."""
+    """Interactive KNN explainability GUI aligned with notebook Model D."""
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("KNN Pokémon Type Explorer — XAI")
-        self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
-        self.root.resizable(False, False)
-        self.root.configure(bg="#1e1e1e")
+        self.root.title(WINDOW_TITLE)
+        self.root.geometry("1500x920")
+        self.root.minsize(1200, 700)
+        self.root.configure(bg=BG)
 
-        self.status_label: Optional[tk.Label] = None
+        self.model: Optional[dict] = None
+        self.current_id: Optional[int] = None
+        self._canvas_refs: list[FigureCanvasTkAgg] = []
+
         self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.after(50, self._load_model)
 
-        # Train model in background after UI is drawn
-        self.model = None
-        self.root.after(100, self._load_model)
+    # ── UI construction ──────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
+        """Create the top-bar controls and the three-column main area."""
         # ── Top bar ──────────────────────────────────────────────────────────
-        top = tk.Frame(self.root, bg="#1e1e1e")
-        top.pack(fill=tk.X, padx=10, pady=8)
+        top = tk.Frame(self.root, bg=BG)
+        top.pack(fill=tk.X, padx=10, pady=6)
 
-        tk.Label(top, text="Pokémon ID:", bg="#1e1e1e", fg="white",
-                 font=("Arial", 11)).pack(side=tk.LEFT)
-        self.id_entry = tk.Entry(top, width=8, font=("Arial", 11))
-        self.id_entry.pack(side=tk.LEFT, padx=(6, 10))
-        self.id_entry.bind("<Return>", lambda _: self._explain())
+        tk.Label(
+            top, text="Pok\u00e9mon ID:", bg=BG, fg=FG, font=("Arial", 11),
+        ).pack(side=tk.LEFT)
 
-        tk.Button(top, text="Explain", command=self._explain,
-                  bg="#3a7bd5", fg="white", font=("Arial", 11),
-                  relief=tk.FLAT, padx=10).pack(side=tk.LEFT)
+        self.id_entry = tk.Entry(top, width=7, font=("Arial", 11))
+        self.id_entry.pack(side=tk.LEFT, padx=(4, 8))
+        self.id_entry.bind("<Return>", lambda _: self._explain_from_entry())
 
-        self.status_label = tk.Label(top, text="Loading model...",
-                                     bg="#1e1e1e", fg="#aaaaaa",
-                                     font=("Arial", 10))
-        self.status_label.pack(side=tk.LEFT, padx=16)
+        tk.Button(
+            top, text="Explain", command=self._explain_from_entry,
+            bg=ACCENT, fg="white", font=("Arial", 10, "bold"),
+            relief=tk.FLAT, padx=8,
+        ).pack(side=tk.LEFT, padx=(0, 12))
 
-        # ── Main area ────────────────────────────────────────────────────────
-        main = tk.Frame(self.root, bg="#1e1e1e")
-        main.pack(fill=tk.BOTH, expand=True, padx=10)
+        # Navigation arrows
+        tk.Button(
+            top, text="\u25c0", command=self._prev,
+            bg="#444", fg=FG, font=("Arial", 12), relief=tk.FLAT, width=3,
+        ).pack(side=tk.LEFT, padx=2)
+        tk.Button(
+            top, text="\u25b6", command=self._next,
+            bg="#444", fg=FG, font=("Arial", 12), relief=tk.FLAT, width=3,
+        ).pack(side=tk.LEFT, padx=(2, 10))
 
-        # Left: sprite + info
-        self.left_frame = tk.Frame(main, bg="#1e1e1e", width=220)
+        tk.Button(
+            top, text="Random", command=self._random,
+            bg="#555", fg=FG, font=("Arial", 10), relief=tk.FLAT, padx=6,
+        ).pack(side=tk.LEFT, padx=2)
+        tk.Button(
+            top, text="Random Misclassified", command=self._random_misclassified,
+            bg="#8B0000", fg="white", font=("Arial", 10), relief=tk.FLAT, padx=6,
+        ).pack(side=tk.LEFT, padx=(2, 10))
+
+        # Mode toggle
+        self.mode_var = tk.StringVar(value="Test set only")
+        mode_combo = ttk.Combobox(
+            top, textvariable=self.mode_var,
+            values=["Test set only", "All Pok\u00e9mon"],
+            state="readonly", width=14, font=("Arial", 10),
+        )
+        mode_combo.pack(side=tk.LEFT, padx=(0, 12))
+
+        self.status_label = tk.Label(
+            top, text="Loading model\u2026", bg=BG, fg=FG_DIM, font=("Arial", 10),
+        )
+        self.status_label.pack(side=tk.LEFT, padx=8)
+
+        # ── Main area: three columns ────────────────────────────────────────
+        main = tk.Frame(self.root, bg=BG)
+        main.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 6))
+
+        self.left_frame = tk.Frame(main, bg=BG, width=265)
         self.left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 6))
         self.left_frame.pack_propagate(False)
 
-        # Center: neighbour mosaic
-        self.center_frame = tk.Frame(main, bg="#1e1e1e", width=480)
-        self.center_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 6))
-        self.center_frame.pack_propagate(False)
+        self.center_frame = tk.Frame(main, bg=BG)
+        self.center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
 
-        # Right: charts (stacked)
-        self.right_frame = tk.Frame(main, bg="#1e1e1e")
-        self.right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.right_frame = tk.Frame(main, bg=BG, width=390)
+        self.right_frame.pack(side=tk.RIGHT, fill=tk.Y)
+        self.right_frame.pack_propagate(False)
+
+        # Keyboard shortcuts
+        self.root.bind("<Left>", lambda _: self._prev())
+        self.root.bind("<Right>", lambda _: self._next())
+        self.root.bind("<r>", lambda _: self._random())
+        self.root.bind("<m>", lambda _: self._random_misclassified())
+
+    # ── Model loading ────────────────────────────────────────────────────────
 
     def _load_model(self) -> None:
-        """Train the KNN model."""
+        """Train Model D; update status label when done."""
         try:
-            self.model = _train_knn()
+            self.model = train_model_d()
+            n = len(self.model["df"])
+            nt = len(self.model["test_ids"])
+            nm = len(self.model["misclassified_ids"])
             self.status_label.config(
-                text=f"Ready — {len(self.model['df'])} Pokémon loaded",
-                fg="#88cc88",
+                text=f"Ready \u2014 {n} Pok\u00e9mon | {nt} test | {nm} misclassified",
+                fg=GREEN,
             )
-        except Exception as e:
-            self.status_label.config(text=f"Error: {e}", fg="#ff6b6b")
+        except Exception as exc:
+            self.status_label.config(text=f"Error: {exc}", fg=RED)
+
+    def _on_close(self) -> None:
+        plt.close("all")
+        self.root.destroy()
+
+    # ── Navigation helpers ───────────────────────────────────────────────────
+
+    def _id_list(self) -> list[int]:
+        """Return the sorted ID list for the current mode."""
+        if self.model is None:
+            return []
+        if self.mode_var.get() == "Test set only":
+            return self.model["test_ids"]
+        return self.model["all_ids"]
+
+    def _navigate(self, direction: int) -> None:
+        """Move to the previous (*direction=-1*) or next (*+1*) Pokemon."""
+        ids = self._id_list()
+        if not ids:
+            return
+        if self.current_id is None:
+            self._explain(ids[0] if direction == 1 else ids[-1])
+            return
+        # bisect handles the case where current_id isn't in the list (mode switch)
+        pos = bisect.bisect_left(ids, self.current_id)
+        if pos < len(ids) and ids[pos] == self.current_id:
+            new_pos = (pos + direction) % len(ids)
+        else:
+            new_pos = min(pos, len(ids) - 1) if direction == 1 else max(pos - 1, 0)
+        self._explain(ids[new_pos])
+
+    def _prev(self) -> None:
+        self._navigate(-1)
+
+    def _next(self) -> None:
+        self._navigate(1)
+
+    def _random(self) -> None:
+        ids = self._id_list()
+        if ids:
+            self._explain(random.choice(ids))
+
+    def _random_misclassified(self) -> None:
+        if self.model and self.model["misclassified_ids"]:
+            self._explain(random.choice(self.model["misclassified_ids"]))
+
+    # ── Core explain entry-points ────────────────────────────────────────────
+
+    def _explain_from_entry(self) -> None:
+        """Read the ID text field and explain that Pokemon."""
+        raw = self.id_entry.get().strip()
+        if not raw.isdigit():
+            self.status_label.config(text="Enter a numeric Pok\u00e9dex ID.", fg=RED)
+            return
+        self._explain(int(raw))
+
+    def _explain(self, pokemon_id: int) -> None:
+        """Run the full query and render all panels."""
+        if self.model is None:
+            self.status_label.config(text="Model not loaded yet.", fg=RED)
+            return
+
+        result = query_pokemon(self.model, pokemon_id)
+        if result is None:
+            self.status_label.config(text=f"ID {pokemon_id} not found.", fg=RED)
+            return
+
+        self.current_id = pokemon_id
+        self.id_entry.delete(0, tk.END)
+        self.id_entry.insert(0, str(pokemon_id))
+        self._clear_panels()
+        self._render(result)
+
+        tag = "test" if result["in_test"] else "train"
+        sym = "\u2713" if result["correct"] else "\u2717"
+        self.status_label.config(
+            text=(
+                f"#{pokemon_id} {result['name'].capitalize()} [{tag}]  "
+                f"{result['true_type']}\u2192{result['pred_type']} {sym}"
+            ),
+            fg=GREEN if result["correct"] else RED,
+        )
+
+    # ── Panel management ─────────────────────────────────────────────────────
 
     def _clear_panels(self) -> None:
         for frame in (self.left_frame, self.center_frame, self.right_frame):
             for w in frame.winfo_children():
                 w.destroy()
+        for c in self._canvas_refs:
+            plt.close(c.figure)
+        self._canvas_refs.clear()
         plt.close("all")
 
-    def _explain(self) -> None:
-        raw = self.id_entry.get().strip()
-        if not raw.isdigit():
-            self.status_label.config(text="Enter a numeric ID.", fg="#ff6b6b")
-            return
-        if self.model is None:
-            self.status_label.config(text="Model not loaded yet.", fg="#ff6b6b")
-            return
+    def _embed(self, fig: plt.Figure, parent: tk.Frame, **pack_kw) -> None:
+        """Draw a matplotlib figure into a Tk frame."""
+        canvas = FigureCanvasTkAgg(fig, master=parent)
+        canvas.draw()
+        canvas.get_tk_widget().pack(**pack_kw)
+        self._canvas_refs.append(canvas)
 
-        pokemon_id = int(raw)
-        m = self.model
-        df = m["df"]
+    # ── Rendering ────────────────────────────────────────────────────────────
 
-        row_mask = df["id"] == pokemon_id
-        if not row_mask.any():
-            self.status_label.config(
-                text=f"ID {pokemon_id} not found.", fg="#ff6b6b"
-            )
-            return
+    def _render(self, r: dict) -> None:
+        """Populate all three columns from a query result dict."""
+        self._render_header(r)
+        self._render_neighbors(r)
+        self._render_counterfactual(r)
+        self._render_feature_chart(r)
+        self._render_stats(r)
 
-        row = df[row_mask].iloc[0]
-        df_pos = df[row_mask].index[0]
-        test_indices = m["split_idx"]["test_idx"]
-        match = np.where(test_indices == np.where(df.index == df_pos)[0][0])[0]
+    def _render_header(self, r: dict) -> None:
+        """Left column: sprite, name/ID, types, correctness, swatches, votes."""
+        f = self.left_frame
 
-        # Allow both train and test set Pokémon
-        if len(match) > 0:
-            i = match[0]
-            x_query = m["X_test_sc"].iloc[i]
-            pred_int = int(m["y_pred"][i])
-            in_test = True
-        else:
-            # Training set — predict directly
-            train_indices = m["split_idx"]["train_idx"]
-            match_tr = np.where(
-                train_indices == np.where(df.index == df_pos)[0][0]
-            )[0]
-            if len(match_tr) == 0:
-                self.status_label.config(
-                    text=f"ID {pokemon_id} not in splits.", fg="#ff6b6b"
-                )
-                return
-            i_tr = match_tr[0]
-            x_query = m["X_train_sc"].iloc[i_tr]
-            pred_int = int(m["knn"].predict(x_query.values.reshape(1, -1))[0])
-            in_test = False
+        # Sprite
+        sprite = _load_sprite(r["pokemon_id"], size=(160, 160))
+        if sprite is not None:
+            photo = ImageTk.PhotoImage(sprite)
+            lbl = tk.Label(f, image=photo, bg=BG)
+            lbl.image = photo  # prevent GC
+            lbl.pack(pady=(10, 4))
 
-        pred_label = m["int_to_type"][pred_int]
-        true_label = row["type1"]
-        type2 = row["type2"] if pd.notna(row["type2"]) else "—"
+        # Name + ID
+        tk.Label(
+            f, text=f"{r['name'].capitalize()}  #{r['pokemon_id']}",
+            bg=BG, fg=FG, font=("Arial", 13, "bold"),
+        ).pack(pady=(2, 4))
 
-        self._clear_panels()
-        self.status_label.config(text="", fg="#aaaaaa")
+        # True type (coloured)
+        true_c = common.TYPE_COLORS.get(r["true_type"], FG)
+        tk.Label(
+            f, text=f"True: {r['true_type']}",
+            bg=BG, fg=true_c, font=("Arial", 11),
+        ).pack()
 
-        # ── Left: sprite + info ─────────────────────────────────────────────
-        sprite_path = common.get_sprite_path(pokemon_id)
-        if sprite_path.exists():
-            img = Image.open(sprite_path).convert("RGBA")
-            img = img.resize((160, 160), Image.NEAREST)
-            photo = ImageTk.PhotoImage(img)
-            lbl = tk.Label(self.left_frame, image=photo, bg="#1e1e1e")
-            lbl.image = photo
-            lbl.pack(pady=(20, 6))
+        # Predicted type + check / cross
+        pred_c = common.TYPE_COLORS.get(r["pred_type"], FG)
+        sym = "  \u2713 Correct" if r["correct"] else "  \u2717 Wrong"
+        sym_c = GREEN if r["correct"] else RED
+        pf = tk.Frame(f, bg=BG)
+        pf.pack(pady=2)
+        tk.Label(pf, text=f"Pred: {r['pred_type']}", bg=BG, fg=pred_c,
+                 font=("Arial", 11)).pack(side=tk.LEFT)
+        tk.Label(pf, text=sym, bg=BG, fg=sym_c,
+                 font=("Arial", 11, "bold")).pack(side=tk.LEFT)
 
-        correct = pred_label == true_label
-        color = "#88cc88" if correct else "#ff6b6b"
-        info = (
-            f"{row['name'].capitalize()}  (#{pokemon_id})\n\n"
-            f"True:      {true_label}\n"
-            f"Predicted: {pred_label}  {'✓' if correct else '✗'}\n"
-            f"Type 2:    {type2}\n"
-            f"Set:       {'test' if in_test else 'train'}"
-        )
-        tk.Label(self.left_frame, text=info, bg="#1e1e1e", fg=color,
-                 font=("Courier", 10), justify=tk.LEFT).pack(pady=6)
+        # Type2 + set membership
+        t2 = r["type2"] if r["type2"] else "\u2014"
+        tag = "test set" if r["in_test"] else "train set"
+        tk.Label(
+            f, text=f"Type 2: {t2}  |  {tag}",
+            bg=BG, fg=FG_DIM, font=("Arial", 9),
+        ).pack(pady=2)
 
-        if type2 != "—" and pred_label == type2:
+        if r["type2"] and r["pred_type"] == r["type2"]:
             tk.Label(
-                self.left_frame,
-                text="★ Pred matches type2!",
-                bg="#1e1e1e", fg="#ffcc00",
-                font=("Arial", 9, "bold"),
+                f, text="\u2605 Pred matches type2!",
+                bg=BG, fg=YELLOW, font=("Arial", 9, "bold"),
             ).pack()
 
-        # Color swatches
-        fig_swatches = build_color_swatches(row)
-        canvas_sw = FigureCanvasTkAgg(fig_swatches, master=self.left_frame)
-        canvas_sw.draw()
-        canvas_sw.get_tk_widget().pack(fill=tk.X, padx=4, pady=(6, 2))
+        # Dominant-colour swatches
+        self._embed(build_color_swatches(r["raw_features"]),
+                    f, fill=tk.X, padx=4, pady=(4, 2))
 
-        # ── Neighbours ───────────────────────────────────────────────────────
-        knn = m["knn"]
-        distances, neigh_idx = knn.kneighbors(
-            x_query.values.reshape(1, -1), n_neighbors=knn.n_neighbors
+        # Vote-distribution bar
+        self._embed(
+            build_confidence_bar(r["vote_counts"], r["pred_type"], KNN_N_NEIGHBORS),
+            f, fill=tk.X, padx=4, pady=2,
         )
-        neighbor_df_indices = m["X_train_sc"].index[neigh_idx[0]]
 
-        # Center: mosaic
-        fig_mosaic = build_neighbor_mosaic(
-            df, neighbor_df_indices,
-            row["name"].capitalize(), pokemon_id, knn.n_neighbors,
+    def _render_neighbors(self, r: dict) -> None:
+        """Centre column top: neighbour mosaic."""
+        self._embed(
+            build_neighbor_panel(r["neighbors"], r["pred_type"]),
+            self.center_frame, fill=tk.X, pady=(0, 4),
         )
-        canvas = FigureCanvasTkAgg(fig_mosaic, master=self.center_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # Right top: type dist
-        fig_dist = build_type_dist_chart(df, neighbor_df_indices)
-        canvas2 = FigureCanvasTkAgg(fig_dist, master=self.right_frame)
-        canvas2.draw()
-        canvas2.get_tk_widget().pack(fill=tk.X, pady=(0, 4))
-
-        # Right bottom: feature distance
-        fig_feat = build_distance_chart(
-            m["X_train_sc"], neighbor_df_indices, x_query
+    def _render_counterfactual(self, r: dict) -> None:
+        """Centre column bottom: nearest-enemy panel."""
+        self._embed(
+            build_counterfactual_panel(r["counterfactual"], r["pred_type"]),
+            self.center_frame, fill=tk.X, pady=4,
         )
-        canvas3 = FigureCanvasTkAgg(fig_feat, master=self.right_frame)
-        canvas3.draw()
-        canvas3.get_tk_widget().pack(fill=tk.X)
 
+    def _render_feature_chart(self, r: dict) -> None:
+        """Right column top: feature-distance horizontal bars."""
+        self._embed(
+            build_feature_distance_chart(r["feat_dist_top10"]),
+            self.right_frame, fill=tk.X, pady=(0, 4),
+        )
+
+    def _render_stats(self, r: dict) -> None:
+        """Right column bottom: scrollable table of raw CORE_FEATURES values."""
+        tk.Label(
+            self.right_frame, text="CORE_FEATURES (raw values)",
+            bg=BG, fg=FG_DIM, font=("Arial", 9, "bold"),
+        ).pack(anchor=tk.W, padx=4)
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure(
+            "Dark.Treeview",
+            background=BG_LIGHT, foreground=FG, fieldbackground=BG_LIGHT,
+            font=("Courier", 8), rowheight=18,
+        )
+        style.configure(
+            "Dark.Treeview.Heading",
+            background="#444", foreground=FG, font=("Arial", 8, "bold"),
+        )
+
+        tf = tk.Frame(self.right_frame, bg=BG)
+        tf.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
+
+        tree = ttk.Treeview(
+            tf, columns=("feature", "value"), show="headings",
+            style="Dark.Treeview", height=14,
+        )
+        tree.heading("feature", text="Feature")
+        tree.heading("value", text="Value")
+        tree.column("feature", width=150, anchor=tk.W)
+        tree.column("value", width=90, anchor=tk.E)
+
+        sb = ttk.Scrollbar(tf, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        for feat, val in r["raw_features"].items():
+            tree.insert("", tk.END, values=(feat, f"{val:.4f}"))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Entry point
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
-    """Launch the KNN Pokémon Type Explorer."""
+    """Launch the KNN Explorer."""
     root = tk.Tk()
-    app = KNNExplorer(root)
+    KNNExplorer(root)
     root.mainloop()
 
 

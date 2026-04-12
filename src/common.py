@@ -71,7 +71,7 @@ TYPE_COLORS = {
 # Chosen after running 1_decision_tree.ipynb and inspecting misclassification candidates.
 # correct_clear:      Gyarados  (#130, water/flying)  — obviously blue, correctly water
 # correct_surprise:   Iron Crown (#1023, steel/psychic) — metallic legend, correctly steel
-# misclass_secondary: Gengar    (#94,  ghost/poison)  — purple body -> predicted poison
+# misclass_secondary: Gengar    (#94,  ghost/poison)  — purple body -> predicted fairy (hue_bin_270/300 not selected)
 # misclass_wrong:     Gholdengo (#1000, steel/ghost)  — golden color -> predicted electric
 EXPLAIN_IDS: dict[str, Optional[int]] = {
     "correct_clear":      130,
