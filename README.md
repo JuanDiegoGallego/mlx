@@ -63,6 +63,18 @@ Opens a GUI where you can enter any Pokémon ID and see:
 - Hue histogram (12 bins × 30°)
 - Original sprite with name and types
 
+### 4. Explore Neural Network predictions interactively
+
+```bash
+python src/nn_explorer.py
+```
+
+Opens a GUI for Notebook 3 model exploration (SMOTE + MLP), including:
+- Top predicted class probabilities
+- Global permutation importance (test set)
+- Local feature sensitivity around a selected Pokemon
+- Nearest prototype and nearest counterfactual examples
+
 ## Feature extraction approach
 
 Each sprite undergoes a 5-step pipeline:
